@@ -3,6 +3,6 @@ Type=Application
 Name=RelaunchAI
 Comment=Ton cockpit pour relancer tes sessions Claude Code
 Exec=python3 relaunchai.py
-Icon=utilities-terminal
+Icon=relaunchai
 Categories=Development;Utility;
 StartupNotify=true
