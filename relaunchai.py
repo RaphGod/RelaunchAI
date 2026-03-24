@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QPlainTextEdit,
@@ -485,6 +486,14 @@ class SessionLauncher(QMainWindow):
         header.addWidget(title)
         header.addStretch()
 
+        # Search box
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Rechercher...")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.setMinimumWidth(200)
+        self.search_box.textChanged.connect(self.apply_filter)
+        header.addWidget(self.search_box)
+
         # Project filter
         self.project_filter = QComboBox()
         self.project_filter.setMinimumWidth(200)
@@ -607,6 +616,17 @@ class SessionLauncher(QMainWindow):
                 padding: 6px 8px;
                 border: none;
                 border-bottom: 2px solid {ACCENT};
+            }}
+            QLineEdit {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 5px 8px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {ACCENT};
             }}
             QComboBox {{
                 background-color: {BG_CARD};
@@ -763,6 +783,7 @@ class SessionLauncher(QMainWindow):
 
     def apply_filter(self):
         proj = self.project_filter.currentText()
+        search = self.search_box.text().strip().lower()
         hidden = set(self.config.get("hidden_sessions", []))
         filtered = []
         for s in self.sessions:
@@ -770,6 +791,15 @@ class SessionLauncher(QMainWindow):
                 continue
             if s["sessionId"] in hidden and not self.show_hidden:
                 continue
+            if search:
+                haystack = " ".join([
+                    s.get("sessionName", ""),
+                    s.get("summary", ""),
+                    s.get("project", ""),
+                    s.get("sessionId", ""),
+                ]).lower()
+                if search not in haystack:
+                    continue
             filtered.append(s)
         self.filtered_sessions = filtered
         self.populate_table()
