@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QTableWidget,
@@ -506,6 +507,8 @@ class SessionLauncher(QMainWindow):
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
         self.table.doubleClicked.connect(self.on_double_click)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.on_right_click)
 
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(COL_ID, QHeaderView.Fixed)
@@ -825,8 +828,8 @@ class SessionLauncher(QMainWindow):
             cb_layout.setContentsMargins(0, 0, 0, 0)
             self.table.setCellWidget(row, COL_CHECK, cb_widget)
 
-            # Col 4: Session name
-            display_name = session["sessionName"] if session["sessionName"] else session["sessionId"][:12] + "..."
+            # Col 4: Session name (full UUID if no name)
+            display_name = session["sessionName"] if session["sessionName"] else session["sessionId"]
             name_item = QTableWidgetItem(display_name)
             name_item.setToolTip(session["sessionId"])
             if session["sessionName"]:
@@ -978,6 +981,48 @@ class SessionLauncher(QMainWindow):
                 if s:
                     selected.append(s)
         return selected
+
+    def on_right_click(self, pos):
+        """Right-click context menu to copy session info."""
+        row = self.table.rowAt(pos.y())
+        session = self._session_for_row(row)
+        if not session:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                padding: 4px;
+            }}
+            QMenu::item:selected {{
+                background-color: {ACCENT};
+            }}
+        """)
+
+        name = session["sessionName"] or session["sessionId"]
+        act_name = menu.addAction(f"Copier nom : {name}")
+        act_id = menu.addAction(f"Copier ID : {session['sessionId']}")
+        act_cmd = menu.addAction("Copier commande resume")
+
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        clipboard = QApplication.clipboard()
+        if action == act_name:
+            clipboard.setText(name)
+            self.status_label.setText("Nom copié")
+        elif action == act_id:
+            clipboard.setText(session["sessionId"])
+            self.status_label.setText("Session ID copié")
+        elif action == act_cmd:
+            cmd = f'cd "{session["projectPath"]}" && claude --resume "{session["sessionId"]}"'
+            clipboard.setText(cmd)
+            self.status_label.setText("Commande copiée")
+        else:
+            return
+        self.status_label.setStyleSheet(f"color: {GREEN};")
+        QTimer.singleShot(2000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
 
     def on_double_click(self, index):
         """Double-click: focus if active, launch if inactive."""
