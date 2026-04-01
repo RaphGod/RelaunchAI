@@ -1,7 +1,7 @@
-# RelaunchAI — Documentation technique
+# CLILauncher — Documentation technique
 
 **Version :** 1.0.4
-**Repo :** https://github.com/RaphGod/RelaunchAI
+**Repo :** https://github.com/RaphGod/CLILauncher
 
 App PySide6 pour lister, surveiller, résumer et relancer les sessions Claude Code depuis une interface graphique.
 
@@ -9,9 +9,9 @@ App PySide6 pour lister, surveiller, résumer et relancer les sessions Claude Co
 
 ```bash
 # Direct
-/home/rapha/claudedevlocal/drivux/.venv/bin/python3 /home/rapha/outils/claude/relaunchai.py
+/home/rapha/claudedevlocal/drivux/.venv/bin/python3 /home/rapha/outils/claude/clilauncher.py
 
-# Ou via le menu KDE : "RelaunchAI"
+# Ou via le menu KDE : "CLILauncher"
 # Autostart : se lance automatiquement au login
 ```
 
@@ -19,16 +19,16 @@ App PySide6 pour lister, surveiller, résumer et relancer les sessions Claude Co
 
 | Fichier | Rôle |
 |---|---|
-| `/home/rapha/outils/claude/relaunchai.py` | Code source principal (~500 LOC) |
-| `/home/rapha/outils/claude/relaunchai.svg` | Icône vectorielle |
-| `/home/rapha/outils/claude/relaunchai.png` | Icône PNG 256x256 |
-| `/home/rapha/outils/claude/relaunchai.desktop` | Fichier .desktop distribuable |
+| `/home/rapha/outils/claude/clilauncher.py` | Code source principal (~500 LOC) |
+| `/home/rapha/outils/claude/clilauncher.svg` | Icône vectorielle |
+| `/home/rapha/outils/claude/clilauncher.png` | Icône PNG 256x256 |
+| `/home/rapha/outils/claude/clilauncher.desktop` | Fichier .desktop distribuable |
 | `/home/rapha/outils/claude/README.md` | README GitHub (promo) |
 | `/home/rapha/outils/claude/RELAUNCHAI.md` | Cette doc technique (maintenance) |
 | `~/.local/share/applications/claude-sessions-launcher.desktop` | Raccourci menu KDE |
 | `~/.config/autostart/claude-sessions-launcher.desktop` | Autostart au login |
-| `~/.local/share/icons/hicolor/256x256/apps/relaunchai.png` | Icône installée |
-| `~/.config/relaunchai/config.json` | Config persistante (sessions masquées) |
+| `~/.local/share/icons/hicolor/256x256/apps/clilauncher.png` | Icône installée |
+| `~/.config/clilauncher/config.json` | Config persistante (sessions masquées) |
 
 ## Dépendances
 
@@ -47,7 +47,7 @@ L'app lit directement les fichiers Claude Code + un fichier config propre :
 | `~/.claude/projects/*/sessions-index.json` | Métadonnées indexées : summary, messageCount, dates, customTitle, projectPath |
 | `~/.claude/history.jsonl` | Noms des sessions via `/rename` (champ `display` commençant par `/rename`) |
 | `~/.claude/projects/*/*.jsonl` | Fichiers session bruts (scannés pour trouver ceux absents de l'index) |
-| `~/.config/relaunchai/config.json` | Liste des sessions masquées (`hidden_sessions: [uuid, ...]`) |
+| `~/.config/clilauncher/config.json` | Liste des sessions masquées (`hidden_sessions: [uuid, ...]`) |
 
 ### Pourquoi trois sources ?
 
@@ -98,7 +98,7 @@ cd "{projectPath}" && claude --dangerously-skip-permissions --chrome --resume "{
 - Remonte l'arbre PID : `claude` → `bash` → `tilix`
 - `xdotool search --pid` pour trouver le window ID
 - `wmctrl -i -a` pour activer la fenêtre (plus rapide que xdotool sur KDE)
-- RelaunchAI se minimise automatiquement pour ne pas rester devant
+- CLILauncher se minimise automatiquement pour ne pas rester devant
 
 ### Double-clic
 - Session active → focus la fenêtre
@@ -120,7 +120,7 @@ cd "{projectPath}" && claude --dangerously-skip-permissions --chrome --resume "{
 - Résultat affiché dans une popup (SummaryDialog)
 
 ### Masquer une session
-- Bouton `⊙` → ajoute le sessionId dans `~/.config/relaunchai/config.json`
+- Bouton `⊙` → ajoute le sessionId dans `~/.config/clilauncher/config.json`
 - La session disparaît de la liste
 - Bouton "Afficher masquées" en bas pour les revoir
 - Bouton `○` pour réafficher une session masquée
@@ -144,7 +144,7 @@ cd "{projectPath}" && claude --dangerously-skip-permissions --chrome --resume "{
 ## Architecture du code
 
 ```
-relaunchai.py
+clilauncher.py
 │
 ├── Constants (couleurs, chemins, flags)
 ├── SUMMARY_PROMPT              # Prompt tech lead pour résumé AI

@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=RelaunchAI
+Name=CLILauncher
 Comment=Ton cockpit pour relancer tes sessions Claude Code
-Exec=python3 relaunchai.py
-Icon=relaunchai
+Exec=python3 clilauncher.py
+Icon=clilauncher
 Categories=Development;Utility;
 StartupNotify=true

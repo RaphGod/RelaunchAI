@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RelaunchAI v1.0.4 — PySide6 GUI to list, manage and relaunch Claude Code sessions."""
+"""CLILauncher v1.0.4 — PySide6 GUI to list, manage and relaunch Claude Code sessions."""
 
 import json
 import os
@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 HISTORY_FILE = CLAUDE_DIR / "history.jsonl"
-CONFIG_DIR = Path.home() / ".config" / "relaunchai"
+CONFIG_DIR = Path.home() / ".config" / "clilauncher"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 CLAUDE_CMD = "claude"
@@ -390,14 +390,22 @@ class SummaryWorker(QThread):
 
 
 class SummaryDialog(QDialog):
-    """Dialog to display session summary."""
-    def __init__(self, parent, title, content):
+    """Dialog to display session summary with refresh option."""
+    refresh_requested = Signal()
+
+    def __init__(self, parent, title, content, summary_date=None):
         super().__init__(parent)
         self.setWindowTitle(f"Résumé — {title}")
         self.setMinimumSize(600, 400)
         self.resize(700, 500)
 
         layout = QVBoxLayout(self)
+
+        # Date label
+        if summary_date:
+            date_label = QLabel(f"Dernier résumé : {summary_date}")
+            date_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+            layout.addWidget(date_label)
 
         self.text = QPlainTextEdit()
         self.text.setPlainText(content)
@@ -417,6 +425,10 @@ class SummaryDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        btn_refresh = QPushButton("Relancer le résumé")
+        btn_refresh.setObjectName("secondaryBtn")
+        btn_refresh.clicked.connect(self._on_refresh)
+        btn_row.addWidget(btn_refresh)
         btn_close = QPushButton("Fermer")
         btn_close.setObjectName("secondaryBtn")
         btn_close.clicked.connect(self.close)
@@ -430,7 +442,24 @@ class SummaryDialog(QDialog):
             QLabel {{
                 color: {TEXT};
             }}
+            QPushButton#secondaryBtn {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            QPushButton#secondaryBtn:hover {{
+                background-color: {BG_TABLE};
+            }}
         """)
+
+    def _on_refresh(self):
+        self.refresh_requested.emit()
+        self.close()
+
+    def update_content(self, content, summary_date=None):
+        self.text.setPlainText(content)
 
 
 # Columns
@@ -451,6 +480,117 @@ COL_DELETE = 13
 NUM_COLS = 14
 
 
+class NewSessionDialog(QDialog):
+    """Dialog to create a new Claude session."""
+    def __init__(self, parent, projects):
+        super().__init__(parent)
+        self.setWindowTitle("Nouvelle session")
+        self.setMinimumWidth(450)
+        self.result_data = None
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Project
+        layout.addWidget(QLabel("Répertoire projet :"))
+        self.project_combo = QComboBox()
+        for p in projects:
+            self.project_combo.addItem(p)
+        layout.addWidget(self.project_combo)
+
+        # Session name
+        layout.addWidget(QLabel("Nom de la session :"))
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("ex: dogfir-bgfi dev RUBA")
+        layout.addWidget(self.name_input)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Annuler")
+        btn_cancel.setObjectName("secondaryBtn")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+        btn_launch = QPushButton("Lancer")
+        btn_launch.setObjectName("primaryBtn")
+        btn_launch.clicked.connect(self.on_launch)
+        btn_row.addWidget(btn_launch)
+        layout.addLayout(btn_row)
+
+        # Enter key launches
+        self.name_input.returnPressed.connect(self.on_launch)
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {BG_DARK};
+            }}
+            QLabel {{
+                color: {TEXT};
+                font-size: 13px;
+            }}
+            QLineEdit {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 6px 8px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {ACCENT};
+            }}
+            QComboBox {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 6px 8px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {BG_CARD};
+                border: 1px solid {BORDER};
+                selection-background-color: {ACCENT};
+                color: {TEXT};
+            }}
+            QPushButton#primaryBtn {{
+                background-color: {ACCENT};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }}
+            QPushButton#primaryBtn:hover {{
+                background-color: {ACCENT_HOVER};
+            }}
+            QPushButton#secondaryBtn {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            QPushButton#secondaryBtn:hover {{
+                background-color: {BG_TABLE};
+            }}
+        """)
+
+    def on_launch(self):
+        name = self.name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Erreur", "Donne un nom à la session.")
+            return
+        self.result_data = {
+            "project_path": self.project_combo.currentText(),
+            "name": name,
+        }
+        self.accept()
+
+
 class SessionLauncher(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -460,7 +600,7 @@ class SessionLauncher(QMainWindow):
         self.config = load_config()
         self.show_hidden = False
         self.summary_workers = []  # keep refs to prevent GC
-        self.setWindowTitle("RelaunchAI")
+        self.setWindowTitle("CLILauncher")
         self.setMinimumSize(1200, 600)
         self.resize(1400, 700)
         self.setup_ui()
@@ -480,7 +620,7 @@ class SessionLauncher(QMainWindow):
 
         # Header
         header = QHBoxLayout()
-        title = QLabel("RelaunchAI")
+        title = QLabel("CLILauncher")
         title.setFont(QFont("Segoe UI", 18, QFont.Bold))
         title.setStyleSheet(f"color: {ACCENT};")
         header.addWidget(title)
@@ -558,6 +698,11 @@ class SessionLauncher(QMainWindow):
         bottom.addWidget(self.status_label)
 
         bottom.addStretch()
+
+        btn_new = QPushButton("  + Nouvelle session  ")
+        btn_new.setObjectName("primaryBtn")
+        btn_new.clicked.connect(self.new_session)
+        bottom.addWidget(btn_new)
 
         self.btn_toggle_hidden = QPushButton("Afficher masquées")
         self.btn_toggle_hidden.setObjectName("secondaryBtn")
@@ -1078,7 +1223,7 @@ class SessionLauncher(QMainWindow):
 
         window_id = find_terminal_window(pid)
         if window_id and focus_window(window_id):
-            # Minimize RelaunchAI so terminal comes to front
+            # Minimize CLILauncher so terminal comes to front
             self.showMinimized()
             label = session["sessionName"] or sid[:12]
             self.status_label.setText(f"Focus : {label}")
@@ -1113,10 +1258,20 @@ class SessionLauncher(QMainWindow):
         QTimer.singleShot(2000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
         self.apply_filter()
 
-    def summarize_session(self, session):
-        """Launch claude headless to summarize a session."""
+    def summarize_session(self, session, force=False):
+        """Show cached summary or launch claude headless."""
         sid = session["sessionId"]
         label = session["sessionName"] or sid[:12]
+
+        # Check cache
+        summaries = self.config.get("summaries", {})
+        cached = summaries.get(sid)
+
+        if cached and not force:
+            dialog = SummaryDialog(self, label, cached["text"], cached["date"])
+            dialog.refresh_requested.connect(lambda: self.summarize_session(session, force=True))
+            dialog.exec()
+            return
 
         self.status_label.setText(f"Résumé en cours : {label}...")
         self.status_label.setStyleSheet(f"color: {BLUE};")
@@ -1128,11 +1283,22 @@ class SessionLauncher(QMainWindow):
 
     def _on_summary_done(self, session_id, result, label):
         """Called when summary worker finishes."""
+        # Save to cache
+        now = datetime.now().strftime("%d/%m/%Y %H:%M")
+        summaries = self.config.get("summaries", {})
+        summaries[session_id] = {"text": result, "date": now}
+        self.config["summaries"] = summaries
+        save_config(self.config)
+
         self.status_label.setText(f"Résumé terminé : {label}")
         self.status_label.setStyleSheet(f"color: {GREEN};")
         QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
 
-        dialog = SummaryDialog(self, label, result)
+        # Find session for refresh callback
+        session = next((s for s in self.sessions if s["sessionId"] == session_id), None)
+        dialog = SummaryDialog(self, label, result, now)
+        if session:
+            dialog.refresh_requested.connect(lambda: self.summarize_session(session, force=True))
         dialog.exec()
 
         # Cleanup worker refs
@@ -1180,6 +1346,29 @@ class SessionLauncher(QMainWindow):
         else:
             QMessageBox.warning(self, "Erreur", "Fichier session introuvable.")
 
+    def new_session(self):
+        """Open dialog to create a new session."""
+        # Collect unique project paths
+        project_paths = sorted(set(s["projectPath"] for s in self.sessions if s["projectPath"]))
+        if not project_paths:
+            project_paths = [os.path.expanduser("~")]
+
+        dialog = NewSessionDialog(self, project_paths)
+        if dialog.exec() and dialog.result_data:
+            data = dialog.result_data
+            cmd = f'cd "{data["project_path"]}" && {CLAUDE_CMD} {CLAUDE_FLAGS} -n "{data["name"]}"'
+            try:
+                subprocess.Popen(
+                    [TERMINAL_CMD, "-e", f"bash -c '{cmd}'"],
+                    start_new_session=True,
+                )
+                self.status_label.setText(f"Nouvelle session : {data['name']}")
+                self.status_label.setStyleSheet(f"color: {GREEN};")
+                QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+                QTimer.singleShot(3000, self.refresh_sessions)
+            except OSError:
+                QMessageBox.warning(self, "Erreur", "Impossible de lancer le terminal.")
+
     def launch_single(self, session):
         ok = launch_session(session["projectPath"], session["resumeName"], session["sessionId"])
         label = session["sessionName"] or session["sessionId"][:12]
@@ -1222,7 +1411,7 @@ class SessionLauncher(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("RelaunchAI")
+    app.setApplicationName("CLILauncher")
     window = SessionLauncher()
     window.show()
     sys.exit(app.exec())

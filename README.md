@@ -1,7 +1,7 @@
-# RelaunchAI
+# CLILauncher
 
 <p align="center">
-  <img src="relaunchai.svg" width="128" alt="RelaunchAI Logo"/>
+  <img src="clilauncher.svg" width="128" alt="CLILauncher Logo"/>
 </p>
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 Tu utilises Claude Code avec 10 terminaux ouverts ? Tu relances tes sessions chaque matin en copiant-collant des UUIDs ? Tu ne sais plus quelle session fait quoi ?
 
-**RelaunchAI règle tout ça.**
+**CLILauncher règle tout ça.**
 
 Une app desktop qui scanne automatiquement toutes tes sessions Claude Code, détecte celles qui tournent, et te permet de tout piloter depuis une seule interface.
 
@@ -66,29 +66,29 @@ Une app desktop qui scanne automatiquement toutes tes sessions Claude Code, dét
 
 ```bash
 # Clone le repo
-git clone https://github.com/RaphGod/RelaunchAI.git
-cd RelaunchAI
+git clone https://github.com/RaphGod/CLILauncher.git
+cd CLILauncher
 
 # Installe les dépendances
 pip install PySide6
 sudo apt install xdotool wmctrl  # Linux
 
 # Lance l'app
-python3 relaunchai.py
+python3 clilauncher.py
 ```
 
 ### Raccourci desktop (Linux/KDE)
 
 ```bash
 # Menu des applications
-cp relaunchai.desktop ~/.local/share/applications/
+cp clilauncher.desktop ~/.local/share/applications/
 
 # Autostart au login (optionnel)
-cp relaunchai.desktop ~/.config/autostart/
+cp clilauncher.desktop ~/.config/autostart/
 
 # Icône
 mkdir -p ~/.local/share/icons/hicolor/256x256/apps/
-cp relaunchai.png ~/.local/share/icons/hicolor/256x256/apps/
+cp clilauncher.png ~/.local/share/icons/hicolor/256x256/apps/
 ```
 
 ## Utilisation
@@ -125,7 +125,7 @@ cp relaunchai.png ~/.local/share/icons/hicolor/256x256/apps/
 
 ## Comment ça marche
 
-RelaunchAI combine 3 sources de données Claude Code :
+CLILauncher combine 3 sources de données Claude Code :
 
 1. **`~/.claude/projects/*/sessions-index.json`** — Métadonnées indexées
 2. **`~/.claude/history.jsonl`** — Noms de sessions via `/rename`
@@ -135,7 +135,7 @@ La détection des sessions actives scanne les processus `claude --resume` et rem
 
 ## Configuration
 
-En haut de `relaunchai.py` :
+En haut de `clilauncher.py` :
 
 ```python
 CLAUDE_CMD = "claude"                                    # Commande Claude
@@ -143,7 +143,7 @@ CLAUDE_FLAGS = "--dangerously-skip-permissions --chrome"  # Flags par défaut
 TERMINAL_CMD = "tilix"                                   # Terminal préféré
 ```
 
-Sessions masquées stockées dans `~/.config/relaunchai/config.json`.
+Sessions masquées stockées dans `~/.config/clilauncher/config.json`.
 
 ## Roadmap
 
