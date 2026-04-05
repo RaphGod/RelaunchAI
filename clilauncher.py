@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLILauncher v1.0.4 — PySide6 GUI to list, manage and relaunch Claude Code sessions."""
+"""CLILauncher v1.1.0 — PySide6 GUI to list, manage and relaunch Claude Code sessions."""
 
 import json
 import os
@@ -32,15 +32,25 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
 )
 
+from platform_utils import (
+    get_running_sessions,
+    find_and_focus_session_window,
+    launch_in_terminal,
+    launch_new_session_in_terminal,
+    get_available_terminals,
+)
+from sync_manager import SyncManager
+
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 HISTORY_FILE = CLAUDE_DIR / "history.jsonl"
 CONFIG_DIR = Path.home() / ".config" / "clilauncher"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-CLAUDE_CMD = "claude"
-CLAUDE_FLAGS = "--dangerously-skip-permissions --chrome"
-TERMINAL_CMD = "tilix"
+# Defaults — overridden by config.json if present
+DEFAULT_CLAUDE_CMD = "claude"
+DEFAULT_CLAUDE_FLAGS = "--dangerously-skip-permissions --chrome"
+DEFAULT_TERMINAL = ""  # auto-detect
 
 # Colors
 BG_DARK = "#1a1a2e"
@@ -60,13 +70,21 @@ RED = "#e74c3c"
 
 
 def load_config():
+    defaults = {
+        "hidden_sessions": [],
+        "claude_cmd": DEFAULT_CLAUDE_CMD,
+        "claude_flags": DEFAULT_CLAUDE_FLAGS,
+        "terminal": DEFAULT_TERMINAL,
+    }
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE) as f:
-                return json.load(f)
+                data = json.load(f)
+            # Merge: config file values override defaults
+            defaults.update(data)
         except (json.JSONDecodeError, IOError):
             pass
-    return {"hidden_sessions": []}
+    return defaults
 
 
 def save_config(cfg):
@@ -91,78 +109,6 @@ def delete_session_files(session_id):
             shutil.rmtree(sub_dir)
             deleted.append(str(sub_dir))
     return deleted
-
-
-def get_running_sessions():
-    """Detect running Claude sessions by scanning processes.
-    Returns dict: {sessionId: claude_pid}
-    """
-    running = {}
-    try:
-        result = subprocess.run(
-            ["ps", "aux"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.splitlines():
-            if "claude" not in line or "--resume" not in line:
-                continue
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-            pid = int(parts[1])
-            # Extract sessionId after --resume
-            for i, arg in enumerate(parts):
-                if arg == "--resume" and i + 1 < len(parts):
-                    sid = parts[i + 1].strip('"').strip("'")
-                    if len(sid) > 30:
-                        running[sid] = pid
-                    break
-    except (subprocess.TimeoutExpired, ValueError, OSError):
-        pass
-    return running
-
-
-def find_terminal_window(claude_pid):
-    """Find the terminal window ID for a running Claude session.
-    Walks up the process tree: claude -> bash -> tilix, then uses xdotool.
-    """
-    try:
-        # Walk up: claude -> bash -> terminal
-        pid = claude_pid
-        for _ in range(3):
-            result = subprocess.run(
-                ["ps", "-o", "ppid=", "-p", str(pid)],
-                capture_output=True, text=True, timeout=3
-            )
-            ppid = result.stdout.strip()
-            if not ppid:
-                break
-            # Try to find window at each level
-            xdo = subprocess.run(
-                ["xdotool", "search", "--pid", ppid],
-                capture_output=True, text=True, timeout=3
-            )
-            if xdo.stdout.strip():
-                # Return first window ID found
-                return int(xdo.stdout.strip().splitlines()[0])
-            pid = int(ppid)
-    except (subprocess.TimeoutExpired, ValueError, OSError):
-        pass
-    return None
-
-
-def focus_window(window_id):
-    """Raise and focus a window by its X11 window ID."""
-    try:
-        # wmctrl works better with KDE than xdotool
-        hex_id = f"0x{window_id:08x}"
-        subprocess.Popen(["wmctrl", "-i", "-a", hex_id])
-        return True
-    except OSError:
-        try:
-            subprocess.Popen(["xdotool", "windowactivate", str(window_id)])
-            return True
-        except OSError:
-            return False
 
 
 def get_rename_map():
@@ -319,28 +265,6 @@ def format_date(iso_str):
         return iso_str[:16]
 
 
-def launch_session(project_path, resume_name, session_id):
-    """Launch a Claude session in a new Tilix terminal."""
-    cmd = f'cd "{project_path}" && {CLAUDE_CMD} {CLAUDE_FLAGS} --resume "{session_id}"'
-    try:
-        subprocess.Popen(
-            [TERMINAL_CMD, "-e", f"bash -c '{cmd}'"],
-            start_new_session=True,
-        )
-        return True
-    except FileNotFoundError:
-        for term in ["konsole", "xterm", "gnome-terminal"]:
-            try:
-                if term == "gnome-terminal":
-                    subprocess.Popen([term, "--", "bash", "-c", cmd], start_new_session=True)
-                else:
-                    subprocess.Popen([term, "-e", f"bash -c '{cmd}'"], start_new_session=True)
-                return True
-            except FileNotFoundError:
-                continue
-    return False
-
-
 SUMMARY_PROMPT = (
     "Analyse cette session de dev en français comme un tech lead intelligent.\n\n"
     "RÈGLES D'ANALYSE :\n"
@@ -369,15 +293,16 @@ class SummaryWorker(QThread):
     """Background thread to run claude -p for session summary."""
     finished = Signal(str, str)  # sessionId, result
 
-    def __init__(self, session_id, project_path):
+    def __init__(self, session_id, project_path, claude_cmd=DEFAULT_CLAUDE_CMD):
         super().__init__()
         self.session_id = session_id
         self.project_path = project_path
+        self.claude_cmd = claude_cmd
 
     def run(self):
         try:
             result = subprocess.run(
-                [CLAUDE_CMD, "-p", SUMMARY_PROMPT, "--resume", self.session_id],
+                [self.claude_cmd, "-p", SUMMARY_PROMPT, "--resume", self.session_id],
                 capture_output=True, text=True, timeout=120,
                 cwd=self.project_path,
             )
@@ -460,6 +385,237 @@ class SummaryDialog(QDialog):
 
     def update_content(self, content, summary_date=None):
         self.text.setPlainText(content)
+
+
+class SyncWorker(QThread):
+    """Background thread for push/pull operations."""
+    progress = Signal(int, int, str)   # current, total, filename
+    finished = Signal(dict)            # result dict
+
+    def __init__(self, sync_manager: SyncManager, operation: str):
+        super().__init__()
+        self.sync_manager = sync_manager
+        self.operation = operation  # "push" or "pull"
+
+    def run(self):
+        try:
+            if self.operation == "push":
+                result = self.sync_manager.push(callback=self._on_progress)
+            else:
+                result = self.sync_manager.pull(callback=self._on_progress)
+            self.finished.emit(result)
+        except Exception as e:
+            self.finished.emit({"pushed": 0, "pulled": 0, "skipped": 0, "errors": [str(e)]})
+
+    def _on_progress(self, current, total, filename):
+        self.progress.emit(current, total, filename)
+
+
+class DiffWorker(QThread):
+    """Background thread to compute push/pull diff."""
+    finished = Signal(dict)  # diff_summary dict
+
+    def __init__(self, sync_manager: SyncManager):
+        super().__init__()
+        self.sync_manager = sync_manager
+
+    def run(self):
+        try:
+            result = self.sync_manager.diff_summary()
+            self.finished.emit(result)
+        except Exception as e:
+            self.finished.emit({
+                "push_count": 0, "pull_count": 0, "up_to_date": 0,
+                "details": f"Erreur : {e}",
+            })
+
+
+class SetupDialog(QDialog):
+    """First-launch wizard / settings dialog for server config."""
+
+    def __init__(self, parent, config: dict, first_launch: bool = False):
+        super().__init__(parent)
+        self.config = dict(config)  # work on a copy
+        self.result_config = None
+
+        title = "Bienvenue dans CLILauncher !" if first_launch else "Configuration serveur"
+        self.setWindowTitle(title)
+        self.setMinimumWidth(500)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        if first_launch:
+            welcome = QLabel(
+                "Configure cette machine pour pouvoir sauvegarder\n"
+                "et restaurer tes sessions Claude sur un serveur central."
+            )
+            welcome.setStyleSheet(f"color: {TEXT}; font-size: 14px;")
+            layout.addWidget(welcome)
+
+        # Machine name
+        layout.addWidget(QLabel("Nom de cette machine :"))
+        self.machine_input = QLineEdit()
+        self.machine_input.setPlaceholderText("ex: libria1, portable-win")
+        self.machine_input.setText(config.get("machine_id", ""))
+        layout.addWidget(self.machine_input)
+
+        # Separator
+        sep = QLabel("Serveur central (optionnel) :")
+        sep.setStyleSheet(f"color: {ACCENT}; font-size: 14px; font-weight: bold; margin-top: 8px;")
+        layout.addWidget(sep)
+
+        # SSH Host
+        layout.addWidget(QLabel("Host SSH :"))
+        self.host_input = QLineEdit()
+        self.host_input.setPlaceholderText("user@host")
+        self.host_input.setText(config.get("central_host", "claudedeployer@37.187.156.119"))
+        layout.addWidget(self.host_input)
+
+        # Remote path
+        layout.addWidget(QLabel("Chemin distant :"))
+        self.path_input = QLineEdit()
+        self.path_input.setPlaceholderText("/srv/shared/clilauncher")
+        self.path_input.setText(config.get("central_path", "/srv/shared/clilauncher"))
+        layout.addWidget(self.path_input)
+
+        # SSH key
+        layout.addWidget(QLabel("Cle SSH :"))
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("~/.ssh/id_ed25519")
+        self.key_input.setText(config.get("ssh_key", "~/.ssh/id_ed25519"))
+        layout.addWidget(self.key_input)
+
+        # Status label for test result
+        self.test_status = QLabel("")
+        self.test_status.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        layout.addWidget(self.test_status)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+
+        btn_test = QPushButton("Tester la connexion")
+        btn_test.setObjectName("secondaryBtn")
+        btn_test.clicked.connect(self._test_connection)
+        btn_row.addWidget(btn_test)
+
+        btn_row.addStretch()
+
+        if first_launch:
+            btn_skip = QPushButton("Passer")
+            btn_skip.setObjectName("secondaryBtn")
+            btn_skip.clicked.connect(self._on_skip)
+            btn_row.addWidget(btn_skip)
+
+        btn_cancel = QPushButton("Annuler")
+        btn_cancel.setObjectName("secondaryBtn")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        btn_save = QPushButton("Enregistrer")
+        btn_save.setObjectName("primaryBtn")
+        btn_save.clicked.connect(self._on_save)
+        btn_row.addWidget(btn_save)
+
+        layout.addLayout(btn_row)
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {BG_DARK};
+            }}
+            QLabel {{
+                color: {TEXT};
+                font-size: 13px;
+            }}
+            QLineEdit {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 6px 8px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {ACCENT};
+            }}
+            QPushButton#primaryBtn {{
+                background-color: {ACCENT};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }}
+            QPushButton#primaryBtn:hover {{
+                background-color: {ACCENT_HOVER};
+            }}
+            QPushButton#secondaryBtn {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            QPushButton#secondaryBtn:hover {{
+                background-color: {BG_TABLE};
+            }}
+        """)
+
+    def _test_connection(self):
+        """Test SSH connection to the configured server."""
+        self.test_status.setText("Test en cours...")
+        self.test_status.setStyleSheet(f"color: {BLUE}; font-size: 12px;")
+        QApplication.processEvents()
+
+        profile = {
+            "central_host": self.host_input.text().strip(),
+            "central_path": self.path_input.text().strip(),
+            "ssh_key": self.key_input.text().strip(),
+        }
+        sm = SyncManager(profile)
+        ok, msg = sm.test_connection()
+        if ok:
+            self.test_status.setText(f"OK : {msg}")
+            self.test_status.setStyleSheet(f"color: {GREEN}; font-size: 12px;")
+        else:
+            self.test_status.setText(f"Echec : {msg}")
+            self.test_status.setStyleSheet(f"color: {RED}; font-size: 12px;")
+
+    def _on_skip(self):
+        """Skip server config but save machine name."""
+        name = self.machine_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Erreur", "Donne un nom a cette machine.")
+            return
+        self.result_config = dict(self.config)
+        self.result_config["machine_id"] = name
+        # Clear server config so push/pull stay hidden
+        self.result_config.pop("central_host", None)
+        self.result_config.pop("central_path", None)
+        self.result_config.pop("ssh_key", None)
+        self.accept()
+
+    def _on_save(self):
+        """Validate and save configuration."""
+        name = self.machine_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Erreur", "Donne un nom a cette machine.")
+            return
+
+        self.result_config = dict(self.config)
+        self.result_config["machine_id"] = name
+        host = self.host_input.text().strip()
+        if host:
+            self.result_config["central_host"] = host
+            self.result_config["central_path"] = self.path_input.text().strip() or "/srv/shared/clilauncher"
+            self.result_config["ssh_key"] = self.key_input.text().strip() or "~/.ssh/id_ed25519"
+        else:
+            self.result_config.pop("central_host", None)
+            self.result_config.pop("central_path", None)
+            self.result_config.pop("ssh_key", None)
+
+        self.accept()
 
 
 # Columns
@@ -603,8 +759,13 @@ class SessionLauncher(QMainWindow):
         self.setWindowTitle("CLILauncher")
         self.setMinimumSize(1200, 600)
         self.resize(1400, 700)
+        self.sync_workers = []  # keep refs to prevent GC
         self.setup_ui()
         self.refresh_sessions()
+
+        # First-launch wizard: if no machine_id in config
+        if not self.config.get("machine_id"):
+            QTimer.singleShot(200, self._show_first_launch_wizard)
 
         # Auto-refresh running status every 5 seconds
         self.status_timer = QTimer(self)
@@ -641,6 +802,28 @@ class SessionLauncher(QMainWindow):
         self.project_filter.currentTextChanged.connect(self.apply_filter)
         header.addWidget(QLabel("Projet :"))
         header.addWidget(self.project_filter)
+
+        # Terminal selector
+        self.terminal_selector = QComboBox()
+        self.terminal_selector.setMinimumWidth(150)
+        terminals = get_available_terminals()
+        for name in terminals:
+            self.terminal_selector.addItem(name)
+        saved_terminal = self.config.get("terminal", "")
+        idx = self.terminal_selector.findText(saved_terminal)
+        if idx >= 0:
+            self.terminal_selector.setCurrentIndex(idx)
+        self.terminal_selector.currentTextChanged.connect(self._on_terminal_changed)
+        header.addWidget(QLabel("Terminal :"))
+        header.addWidget(self.terminal_selector)
+
+        # Gear button (config)
+        btn_gear = QPushButton("\u2699")
+        btn_gear.setObjectName("gearBtn")
+        btn_gear.setToolTip("Configuration serveur")
+        btn_gear.setFixedSize(32, 32)
+        btn_gear.clicked.connect(self.open_setup_dialog)
+        header.addWidget(btn_gear)
 
         layout.addLayout(header)
 
@@ -703,6 +886,21 @@ class SessionLauncher(QMainWindow):
         btn_new.setObjectName("primaryBtn")
         btn_new.clicked.connect(self.new_session)
         bottom.addWidget(btn_new)
+
+        # Push/Pull buttons (visible only if central_host configured)
+        self.btn_push = QPushButton("\u2191 Push")
+        self.btn_push.setObjectName("secondaryBtn")
+        self.btn_push.setToolTip("Envoyer les sessions sur le serveur")
+        self.btn_push.clicked.connect(self.on_push)
+        bottom.addWidget(self.btn_push)
+
+        self.btn_pull = QPushButton("\u2193 Pull")
+        self.btn_pull.setObjectName("secondaryBtn")
+        self.btn_pull.setToolTip("Recevoir les sessions depuis le serveur")
+        self.btn_pull.clicked.connect(self.on_pull)
+        bottom.addWidget(self.btn_pull)
+
+        self._update_sync_buttons_visibility()
 
         self.btn_toggle_hidden = QPushButton("Afficher masquées")
         self.btn_toggle_hidden.setObjectName("secondaryBtn")
@@ -890,6 +1088,18 @@ class SessionLauncher(QMainWindow):
                 background-color: {RED};
                 color: white;
             }}
+            QPushButton#gearBtn {{
+                background-color: transparent;
+                color: {TEXT_DIM};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                font-size: 18px;
+                padding: 0px;
+            }}
+            QPushButton#gearBtn:hover {{
+                background-color: {BG_TABLE};
+                color: {TEXT};
+            }}
             QCheckBox {{
                 spacing: 0px;
             }}
@@ -899,6 +1109,25 @@ class SessionLauncher(QMainWindow):
             }}
             QLabel {{
                 background: transparent;
+            }}
+            QMessageBox {{
+                background-color: {BG_DARK};
+                color: {TEXT};
+            }}
+            QMessageBox QLabel {{
+                color: {TEXT};
+                font-size: 13px;
+            }}
+            QMessageBox QPushButton {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 4px;
+                padding: 6px 16px;
+                min-width: 80px;
+            }}
+            QMessageBox QPushButton:hover {{
+                background-color: {BG_TABLE};
             }}
         """)
 
@@ -1221,8 +1450,7 @@ class SessionLauncher(QMainWindow):
             QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
             return
 
-        window_id = find_terminal_window(pid)
-        if window_id and focus_window(window_id):
+        if find_and_focus_session_window(pid):
             # Minimize CLILauncher so terminal comes to front
             self.showMinimized()
             label = session["sessionName"] or sid[:12]
@@ -1233,6 +1461,11 @@ class SessionLauncher(QMainWindow):
             self.status_label.setText("Fenêtre introuvable")
             self.status_label.setStyleSheet(f"color: {ORANGE};")
             QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+
+    def _on_terminal_changed(self, terminal_name):
+        """Save the selected terminal to config."""
+        self.config["terminal"] = terminal_name
+        save_config(self.config)
 
     def toggle_hidden(self):
         """Toggle showing/hiding masked sessions."""
@@ -1276,7 +1509,8 @@ class SessionLauncher(QMainWindow):
         self.status_label.setText(f"Résumé en cours : {label}...")
         self.status_label.setStyleSheet(f"color: {BLUE};")
 
-        worker = SummaryWorker(sid, session["projectPath"])
+        claude_cmd = self.config.get("claude_cmd", DEFAULT_CLAUDE_CMD)
+        worker = SummaryWorker(sid, session["projectPath"], claude_cmd=claude_cmd)
         worker.finished.connect(lambda s_id, result: self._on_summary_done(s_id, result, label))
         self.summary_workers.append(worker)
         worker.start()
@@ -1356,21 +1590,31 @@ class SessionLauncher(QMainWindow):
         dialog = NewSessionDialog(self, project_paths)
         if dialog.exec() and dialog.result_data:
             data = dialog.result_data
-            cmd = f'cd "{data["project_path"]}" && {CLAUDE_CMD} {CLAUDE_FLAGS} -n "{data["name"]}"'
-            try:
-                subprocess.Popen(
-                    [TERMINAL_CMD, "-e", f"bash -c '{cmd}'"],
-                    start_new_session=True,
-                )
+            terminal = self.terminal_selector.currentText()
+            claude_cmd = self.config.get("claude_cmd", DEFAULT_CLAUDE_CMD)
+            claude_flags = self.config.get("claude_flags", DEFAULT_CLAUDE_FLAGS)
+            ok = launch_new_session_in_terminal(
+                data["project_path"], data["name"],
+                claude_cmd=claude_cmd, claude_flags=claude_flags,
+                terminal=terminal,
+            )
+            if ok:
                 self.status_label.setText(f"Nouvelle session : {data['name']}")
                 self.status_label.setStyleSheet(f"color: {GREEN};")
                 QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
                 QTimer.singleShot(3000, self.refresh_sessions)
-            except OSError:
+            else:
                 QMessageBox.warning(self, "Erreur", "Impossible de lancer le terminal.")
 
     def launch_single(self, session):
-        ok = launch_session(session["projectPath"], session["resumeName"], session["sessionId"])
+        terminal = self.terminal_selector.currentText()
+        claude_cmd = self.config.get("claude_cmd", DEFAULT_CLAUDE_CMD)
+        claude_flags = self.config.get("claude_flags", DEFAULT_CLAUDE_FLAGS)
+        ok = launch_in_terminal(
+            session["projectPath"], session["sessionId"],
+            claude_cmd=claude_cmd, claude_flags=claude_flags,
+            terminal=terminal,
+        )
         label = session["sessionName"] or session["sessionId"][:12]
         if ok:
             self.status_label.setText(f"Lancé : {label}")
@@ -1380,6 +1624,217 @@ class SessionLauncher(QMainWindow):
             QTimer.singleShot(2000, self.refresh_running_status)
         else:
             QMessageBox.warning(self, "Erreur", "Impossible de lancer le terminal.")
+
+    # ------------------------------------------------------------------
+    # Sync: Push / Pull / Setup
+    # ------------------------------------------------------------------
+
+    def _has_sync_config(self) -> bool:
+        """Check if a central server is configured."""
+        return bool(self.config.get("central_host"))
+
+    def _get_sync_manager(self) -> SyncManager:
+        return SyncManager(self.config)
+
+    def _update_sync_buttons_visibility(self):
+        """Show/hide Push/Pull buttons based on config."""
+        visible = self._has_sync_config()
+        self.btn_push.setVisible(visible)
+        self.btn_pull.setVisible(visible)
+
+    def _show_first_launch_wizard(self):
+        """Show the setup wizard on first launch."""
+        dialog = SetupDialog(self, self.config, first_launch=True)
+        if dialog.exec() and dialog.result_config is not None:
+            self.config.update(dialog.result_config)
+            save_config(self.config)
+            self._update_sync_buttons_visibility()
+            machine = self.config.get("machine_id", "")
+            self.status_label.setText(f"Machine configuree : {machine}")
+            self.status_label.setStyleSheet(f"color: {GREEN};")
+            QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+
+    def open_setup_dialog(self):
+        """Open the settings dialog (gear button)."""
+        dialog = SetupDialog(self, self.config, first_launch=False)
+        if dialog.exec() and dialog.result_config is not None:
+            self.config.update(dialog.result_config)
+            save_config(self.config)
+            self._update_sync_buttons_visibility()
+            self.status_label.setText("Configuration enregistree")
+            self.status_label.setStyleSheet(f"color: {GREEN};")
+            QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+
+    def on_push(self):
+        """Push sessions to the central server."""
+        if not self._has_sync_config():
+            return
+
+        self.btn_push.setEnabled(False)
+        self.btn_pull.setEnabled(False)
+        self.status_label.setText("Calcul des differences...")
+        self.status_label.setStyleSheet(f"color: {BLUE};")
+
+        sm = self._get_sync_manager()
+        worker = DiffWorker(sm)
+        worker.finished.connect(self._on_push_diff_ready)
+        self.sync_workers.append(worker)
+        worker.start()
+
+    def _on_push_diff_ready(self, diff_summary):
+        """Show diff dialog and ask user to confirm push."""
+        self.btn_push.setEnabled(True)
+        self.btn_pull.setEnabled(True)
+
+        push_count = diff_summary.get("push_count", 0)
+        up_to_date = diff_summary.get("up_to_date", 0)
+
+        if push_count == 0:
+            self.status_label.setText(f"Rien a envoyer ({up_to_date} fichiers deja a jour)")
+            self.status_label.setStyleSheet(f"color: {GREEN};")
+            QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+            return
+
+        reply = QMessageBox.question(
+            self, "Push vers le serveur",
+            f"{push_count} fichier(s) a envoyer\n"
+            f"{up_to_date} fichier(s) deja a jour\n\n"
+            "Envoyer ?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            self.status_label.setText("Push annule")
+            self.status_label.setStyleSheet(f"color: {TEXT_DIM};")
+            return
+
+        self._run_push()
+
+    def _run_push(self):
+        """Execute the push in a background thread."""
+        self.btn_push.setEnabled(False)
+        self.btn_pull.setEnabled(False)
+        self.status_label.setText("Push : demarrage...")
+        self.status_label.setStyleSheet(f"color: {BLUE};")
+
+        sm = self._get_sync_manager()
+        worker = SyncWorker(sm, "push")
+        worker.progress.connect(self._on_sync_progress)
+        worker.finished.connect(self._on_push_done)
+        self.sync_workers.append(worker)
+        worker.start()
+
+    def _on_sync_progress(self, current, total, filename):
+        """Update status label with sync progress."""
+        short = os.path.basename(filename) if filename else ""
+        self.status_label.setText(f"Sync : {current}/{total} — {short}")
+
+    def _on_push_done(self, result):
+        """Handle push completion."""
+        self.btn_push.setEnabled(True)
+        self.btn_pull.setEnabled(True)
+
+        pushed = result.get("pushed", 0)
+        errors = result.get("errors", [])
+
+        if errors:
+            self.status_label.setText(f"Push : {pushed} envoyes, {len(errors)} erreur(s)")
+            self.status_label.setStyleSheet(f"color: {ORANGE};")
+            QMessageBox.warning(
+                self, "Erreurs push",
+                "Certains fichiers n'ont pas ete envoyes :\n\n" + "\n".join(errors[:10]),
+            )
+        else:
+            self.status_label.setText(f"Push termine : {pushed} fichier(s) envoye(s)")
+            self.status_label.setStyleSheet(f"color: {GREEN};")
+
+        QTimer.singleShot(5000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+        self.sync_workers = [w for w in self.sync_workers if w.isRunning()]
+
+    def on_pull(self):
+        """Pull sessions from the central server."""
+        if not self._has_sync_config():
+            return
+
+        self.btn_push.setEnabled(False)
+        self.btn_pull.setEnabled(False)
+        self.status_label.setText("Calcul des differences...")
+        self.status_label.setStyleSheet(f"color: {BLUE};")
+
+        sm = self._get_sync_manager()
+        worker = DiffWorker(sm)
+        worker.finished.connect(self._on_pull_diff_ready)
+        self.sync_workers.append(worker)
+        worker.start()
+
+    def _on_pull_diff_ready(self, diff_summary):
+        """Show diff dialog and ask user to confirm pull."""
+        self.btn_push.setEnabled(True)
+        self.btn_pull.setEnabled(True)
+
+        pull_count = diff_summary.get("pull_count", 0)
+        up_to_date = diff_summary.get("up_to_date", 0)
+
+        if pull_count == 0:
+            self.status_label.setText(f"Rien a recevoir ({up_to_date} fichiers deja a jour)")
+            self.status_label.setStyleSheet(f"color: {GREEN};")
+            QTimer.singleShot(3000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+            return
+
+        reply = QMessageBox.question(
+            self, "Pull depuis le serveur",
+            f"{pull_count} fichier(s) a recevoir\n"
+            f"{up_to_date} fichier(s) deja a jour\n\n"
+            "Recevoir ?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            self.status_label.setText("Pull annule")
+            self.status_label.setStyleSheet(f"color: {TEXT_DIM};")
+            return
+
+        self._run_pull()
+
+    def _run_pull(self):
+        """Execute the pull in a background thread."""
+        self.btn_push.setEnabled(False)
+        self.btn_pull.setEnabled(False)
+        self.status_label.setText("Pull : demarrage...")
+        self.status_label.setStyleSheet(f"color: {BLUE};")
+
+        sm = self._get_sync_manager()
+        worker = SyncWorker(sm, "pull")
+        worker.progress.connect(self._on_sync_progress)
+        worker.finished.connect(self._on_pull_done)
+        self.sync_workers.append(worker)
+        worker.start()
+
+    def _on_pull_done(self, result):
+        """Handle pull completion."""
+        self.btn_push.setEnabled(True)
+        self.btn_pull.setEnabled(True)
+
+        pulled = result.get("pulled", 0)
+        errors = result.get("errors", [])
+
+        if errors:
+            self.status_label.setText(f"Pull : {pulled} recus, {len(errors)} erreur(s)")
+            self.status_label.setStyleSheet(f"color: {ORANGE};")
+            QMessageBox.warning(
+                self, "Erreurs pull",
+                "Certains fichiers n'ont pas ete recus :\n\n" + "\n".join(errors[:10]),
+            )
+        else:
+            self.status_label.setText(f"Pull termine : {pulled} fichier(s) recu(s)")
+            self.status_label.setStyleSheet(f"color: {GREEN};")
+
+        QTimer.singleShot(5000, lambda: self.status_label.setStyleSheet(f"color: {TEXT_DIM};"))
+        self.sync_workers = [w for w in self.sync_workers if w.isRunning()]
+
+        # Auto-refresh sessions after pull
+        if pulled > 0:
+            self.refresh_sessions()
 
     def launch_selected(self):
         selected = self.get_selected_sessions()
@@ -1398,8 +1853,15 @@ class SessionLauncher(QMainWindow):
                 return
 
         launched = 0
+        terminal = self.terminal_selector.currentText()
+        claude_cmd = self.config.get("claude_cmd", DEFAULT_CLAUDE_CMD)
+        claude_flags = self.config.get("claude_flags", DEFAULT_CLAUDE_FLAGS)
         for session in selected:
-            ok = launch_session(session["projectPath"], session["resumeName"], session["sessionId"])
+            ok = launch_in_terminal(
+                session["projectPath"], session["sessionId"],
+                claude_cmd=claude_cmd, claude_flags=claude_flags,
+                terminal=terminal,
+            )
             if ok:
                 launched += 1
 
