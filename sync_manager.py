@@ -73,8 +73,14 @@ class SyncManager:
             f"{self.central_host}:{remote_path}",
         ]
         log.debug("SCP push: %s -> %s", local_path, remote_path)
+        # Scale timeout with file size (1 min per 50MB, min 60s, max 600s)
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            size = os.path.getsize(local_path)
+            timeout = max(60, min(600, int(60 + size / (50 * 1024 * 1024) * 60)))
+        except OSError:
+            timeout = 60
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             if r.returncode != 0:
                 log.error("scp push failed: %s", r.stderr.strip())
                 return False
@@ -325,31 +331,37 @@ class SyncManager:
             mkdir_cmd = " && ".join(f'mkdir -p "{d}"' for d in sorted(remote_dirs))
             self._ssh_cmd(mkdir_cmd)
 
-        # Push each file
+        # Push each file (catch per-file exceptions so manifest still gets pushed)
         for i, rel_path in enumerate(to_push):
-            if callback:
-                callback(i + 1, total, rel_path)
+            try:
+                if callback:
+                    callback(i + 1, total, rel_path)
 
-            abs_path = file_map.get(rel_path)
-            if abs_path is None or not abs_path.exists():
-                result["errors"].append(f"Fichier local introuvable : {rel_path}")
-                continue
+                abs_path = file_map.get(rel_path)
+                if abs_path is None or not abs_path.exists():
+                    result["errors"].append(f"Fichier local introuvable : {rel_path}")
+                    continue
 
-            remote_path = f"{self.central_path}/{rel_path}"
-            ok = self._scp_push(str(abs_path), remote_path)
-            if ok:
-                result["pushed"] += 1
-            else:
-                result["errors"].append(f"Echec scp : {rel_path}")
+                remote_path = f"{self.central_path}/{rel_path}"
+                ok = self._scp_push(str(abs_path), remote_path)
+                if ok:
+                    result["pushed"] += 1
+                else:
+                    result["errors"].append(f"Echec scp : {rel_path}")
+            except Exception as e:
+                result["errors"].append(f"Exception sur {rel_path} : {e}")
 
         result["skipped"] = len(local_m) - total
 
-        # Update remote manifest with the full local manifest
-        # (pushed files now have local timestamps on the server)
-        self._push_remote_manifest(local_m)
-
-        # Push profile
-        self.push_profile(self.profile)
+        # ALWAYS push manifest and profile, even if some files failed
+        try:
+            self._push_remote_manifest(local_m)
+        except Exception as e:
+            result["errors"].append(f"Echec push manifest : {e}")
+        try:
+            self.push_profile(self.profile)
+        except Exception as e:
+            result["errors"].append(f"Echec push profile : {e}")
 
         return result
 
