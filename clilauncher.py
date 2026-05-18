@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QThread, Signal
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QEvent
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -771,6 +771,15 @@ class SessionLauncher(QMainWindow):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.refresh_running_status)
         self.status_timer.start(5000)
+
+    def changeEvent(self, event):
+        # Close any open QComboBox popup when window loses focus
+        # Prevents ghost popups on Qt+KWin+NVIDIA (override-redirect orphans)
+        if event.type() == QEvent.WindowDeactivate:
+            for combo in self.findChildren(QComboBox):
+                if combo.view().isVisible():
+                    combo.hidePopup()
+        super().changeEvent(event)
 
     def setup_ui(self):
         central = QWidget()
