@@ -26,11 +26,19 @@ CLILauncher est une app desktop PySide6 cross-platform pour gérer les sessions 
 2. **`README.md`** — si la feature est visible utilisateur
 3. **Ce `CLAUDE.md`** — si la roadmap ou le contexte change
 
-## Prochaine étape (à reprendre au retour)
+## Prochaines étapes (à reprendre au retour)
 
-**Tester Codex CLI de OpenAI** comme deuxième agent supporté.
+### v1.2
 
-Voir `doc-privée/SPEC-clilauncher-vision-roadmap.md` section "Agents supportés (roadmap multi-agent)" pour la structure de config `agents` à implémenter dans `global-config.json`.
+1. **Support Codex CLI de OpenAI** — deuxième agent supporté
+   Voir `doc-privée/SPEC-clilauncher-vision-roadmap.md` section "Agents supportés (roadmap multi-agent)" pour la structure de config `agents` à implémenter dans `global-config.json`.
+
+2. **Bouton "Restaurer depuis le serveur"** — corbeille de récupération
+   - Liste les sessions présentes sur le serveur OVH mais absentes en local
+   - Permet de les rapatrier en un clic
+   - Utile quand on a supprimé une session par erreur (cas réel rencontré : récupération de la session Cerbalive DEV 63639dc0 qui n'existait plus localement)
+   - UI : nouveau bouton dans la barre du bas, ouvre un dialog avec checkboxes des sessions disponibles + bouton "Restaurer la sélection"
+   - Côté code : ajouter `SyncManager.list_remote_only()` qui compare manifest serveur vs files locaux
 
 ## Architecture rapide
 
